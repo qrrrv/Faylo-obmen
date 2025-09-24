@@ -3,6 +3,9 @@ from telebot import types
 import logging
 import time
 import re
+import os
+import threading
+from flask import Flask
 from config import Config
 from database import init_db, save_file, get_file, increment_download_count, get_user_files, get_global_stats, get_user_stats, format_size, add_to_favorites, get_favorites, check_password, get_notifications, get_unread_notifications_count, clear_all_notifications
 
@@ -12,6 +15,42 @@ logger = logging.getLogger(__name__)
 
 # Инициализация бота
 bot = telebot.TeleBot(Config.BOT_TOKEN)
+
+# Flask app для поддержки порта
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🤖 File Exchange Bot is Running!"
+
+@app.route('/health')
+def health():
+    return "OK"
+
+@app.route('/ping')
+def ping():
+    return "pong"
+
+def run_flask():
+    """Запуск Flask сервера для порта"""
+    port = int(os.environ.get("PORT", 5000))
+    logger.info(f"Starting Flask server on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
+def run_bot():
+    """Запуск Telegram бота"""
+    init_db()
+    logger.info("База данных инициализирована")
+    logger.info("Бот запущен!")
+    print("🤖 File Exchange Bot запущен!")
+    
+    try:
+        bot.polling(none_stop=True, interval=1, timeout=30)
+    except Exception as e:
+        logger.error(f"Bot error: {e}")
+        # Перезапуск при ошибке
+        time.sleep(5)
+        run_bot()
 
 # Словарь для временных данных
 user_data = {}
@@ -516,12 +555,12 @@ def handle_text(message):
         bot.send_message(message.chat.id, "🤖 Отправьте мне файл чтобы получить ссылку!")
 
 if __name__ == "__main__":
-    init_db()
-    logger.info("База данных инициализирована")
-    logger.info("Бот запущен!")
-    print("🤖 File Exchange Bot запущен!")
+    # Запускаем Flask в отдельном потоке
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
     
-    try:
-        bot.polling(none_stop=True)
-    except KeyboardInterrupt:
-        logger.info("Бот остановлен")
+    # Даем время Flask запуститься
+    time.sleep(2)
+    
+    # Запускаем бота
+    run_bot()
