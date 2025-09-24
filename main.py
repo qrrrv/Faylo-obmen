@@ -5,7 +5,7 @@ import time
 import re
 import os
 import threading
-from flask import Flask
+from flask import Flask, request
 from config import Config
 from database import init_db, save_file, get_file, increment_download_count, get_user_files, get_global_stats, get_user_stats, format_size, add_to_favorites, get_favorites, check_password, get_notifications, get_unread_notifications_count, clear_all_notifications
 
@@ -31,26 +31,49 @@ def health():
 def ping():
     return "pong"
 
+# Вебхук для Telegram
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return 'OK'
+    return 'Error'
+
+@app.route('/set_webhook', methods=['GET'])
+def set_webhook():
+    try:
+        webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME', 'your-app-name.onrender.com')}/webhook"
+        bot.remove_webhook()
+        time.sleep(1)
+        result = bot.set_webhook(url=webhook_url)
+        return f"Webhook set to {webhook_url}: {result}"
+    except Exception as e:
+        return f"Error setting webhook: {e}"
+
 def run_flask():
     """Запуск Flask сервера для порта"""
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 10000))
     logger.info(f"Starting Flask server on port {port}")
     app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
-def run_bot():
-    """Запуск Telegram бота"""
+def run_bot_webhook():
+    """Запуск Telegram бота через вебхук"""
     init_db()
     logger.info("База данных инициализирована")
-    logger.info("Бот запущен!")
-    print("🤖 File Exchange Bot запущен!")
+    logger.info("Бот запущен через вебхук!")
+    print("🤖 File Exchange Bot запущен через вебхук!")
     
+    # Устанавливаем вебхук
     try:
-        bot.polling(none_stop=True, interval=1, timeout=30)
+        webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME', 'your-app-name.onrender.com')}/webhook"
+        bot.remove_webhook()
+        time.sleep(2)
+        bot.set_webhook(url=webhook_url)
+        logger.info(f"Webhook установлен: {webhook_url}")
     except Exception as e:
-        logger.error(f"Bot error: {e}")
-        # Перезапуск при ошибке
-        time.sleep(5)
-        run_bot()
+        logger.error(f"Error setting webhook: {e}")
 
 # Словарь для временных данных
 user_data = {}
@@ -144,15 +167,20 @@ def cmd_start(message):
                 caption += f"⚡ Скачано через @{bot.get_me().username}"
                 
                 # Отправляем файл
-                if media_type == 'photo':
-                    bot.send_photo(message.chat.id, telegram_file_id, caption=caption)
-                elif media_type == 'video':
-                    bot.send_video(message.chat.id, telegram_file_id, caption=caption)
-                elif media_type == 'audio':
-                    bot.send_audio(message.chat.id, telegram_file_id, caption=caption)
-                elif media_type == 'voice':
-                    bot.send_voice(message.chat.id, telegram_file_id, caption=caption)
-                else:
+                try:
+                    if media_type == 'photo':
+                        bot.send_photo(message.chat.id, telegram_file_id, caption=caption)
+                    elif media_type == 'video':
+                        bot.send_video(message.chat.id, telegram_file_id, caption=caption)
+                    elif media_type == 'audio':
+                        bot.send_audio(message.chat.id, telegram_file_id, caption=caption)
+                    elif media_type == 'voice':
+                        bot.send_voice(message.chat.id, telegram_file_id, caption=caption)
+                    else:
+                        bot.send_document(message.chat.id, telegram_file_id, caption=caption)
+                except Exception as e:
+                    logger.error(f"Error sending file: {e}")
+                    # Пытаемся отправить как документ если другие методы не работают
                     bot.send_document(message.chat.id, telegram_file_id, caption=caption)
                 
                 # Кнопки для дальнейших действий
@@ -196,15 +224,19 @@ def handle_password_input(message):
             size_str = format_size(file_size)
             caption = f"📦 Файл получен!\n\n📝 {file_name}\n📊 {size_str}\n👤 Загрузил: {uploader_name or 'пользователь'}"
             
-            if media_type == 'photo':
-                bot.send_photo(message.chat.id, telegram_file_id, caption=caption)
-            elif media_type == 'video':
-                bot.send_video(message.chat.id, telegram_file_id, caption=caption)
-            elif media_type == 'audio':
-                bot.send_audio(message.chat.id, telegram_file_id, caption=caption)
-            elif media_type == 'voice':
-                bot.send_voice(message.chat.id, telegram_file_id, caption=caption)
-            else:
+            try:
+                if media_type == 'photo':
+                    bot.send_photo(message.chat.id, telegram_file_id, caption=caption)
+                elif media_type == 'video':
+                    bot.send_video(message.chat.id, telegram_file_id, caption=caption)
+                elif media_type == 'audio':
+                    bot.send_audio(message.chat.id, telegram_file_id, caption=caption)
+                elif media_type == 'voice':
+                    bot.send_voice(message.chat.id, telegram_file_id, caption=caption)
+                else:
+                    bot.send_document(message.chat.id, telegram_file_id, caption=caption)
+            except Exception as e:
+                logger.error(f"Error sending file: {e}")
                 bot.send_document(message.chat.id, telegram_file_id, caption=caption)
                 
         else:
@@ -218,21 +250,26 @@ def handle_password_input(message):
 
 def show_welcome(message):
     """Показать приветственное сообщение"""
-    unread_count = get_unread_notifications_count(message.from_user.id)
-    notification_badge = f" 🔔 {unread_count}" if unread_count > 0 else ""
-    
-    welcome_text = "👋 Добро пожаловать в File Exchange Bot!\n\n🤖 Мгновенный обмен файлами через Telegram\n\n⚡ Просто отправьте мне файл чтобы начать!"
-    
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    btn_upload = types.KeyboardButton('📤 Загрузить файл')
-    btn_my_files = types.KeyboardButton('📁 Мои файлы')
-    btn_favorites = types.KeyboardButton('⭐ Избранное')
-    btn_stats = types.KeyboardButton('📊 Статистика')
-    btn_notifications = types.KeyboardButton(f'🔔 Уведомления{notification_badge}')
-    btn_help = types.KeyboardButton('❓ Помощь')
-    markup.add(btn_upload, btn_my_files, btn_favorites, btn_stats, btn_notifications, btn_help)
-    
-    bot.send_message(message.chat.id, welcome_text, reply_markup=markup)
+    try:
+        unread_count = get_unread_notifications_count(message.from_user.id)
+        notification_badge = f" 🔔 {unread_count}" if unread_count > 0 else ""
+        
+        welcome_text = "👋 Добро пожаловать в File Exchange Bot!\n\n🤖 Мгновенный обмен файлами через Telegram\n\n⚡ Просто отправьте мне файл чтобы начать!"
+        
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        btn_upload = types.KeyboardButton('📤 Загрузить файл')
+        btn_my_files = types.KeyboardButton('📁 Мои файлы')
+        btn_favorites = types.KeyboardButton('⭐ Избранное')
+        btn_stats = types.KeyboardButton('📊 Статистика')
+        btn_notifications = types.KeyboardButton(f'🔔 Уведомления{notification_badge}')
+        btn_help = types.KeyboardButton('❓ Помощь')
+        markup.add(btn_upload, btn_my_files, btn_favorites, btn_stats, btn_notifications, btn_help)
+        
+        bot.send_message(message.chat.id, welcome_text, reply_markup=markup)
+    except Exception as e:
+        logger.error(f"Error in show_welcome: {e}")
+        # Упрощенное сообщение если есть ошибки
+        bot.send_message(message.chat.id, "👋 Добро пожаловать! Отправьте файл чтобы начать.")
 
 # Обработчики кнопок
 @bot.message_handler(func=lambda message: message.text == '📤 Загрузить файл')
@@ -287,12 +324,15 @@ def handle_media(message):
             file_size = message.voice.file_size
         elif message.content_type == 'document':
             file_id = message.document.file_id
-            file_name = message.document.file_name
+            file_name = message.document.file_name or f"document_{int(time.time())}.bin"
             file_size = message.document.file_size
         elif message.content_type == 'animation':
             file_id = message.animation.file_id
             file_name = f"gif_{int(time.time())}.mp4"
             file_size = message.animation.file_size
+        else:
+            bot.send_message(message.chat.id, "❌ Неподдерживаемый тип файла")
+            return
         
         user_data[user_id] = {
             'file_id': file_id,
@@ -398,7 +438,7 @@ def handle_my_files(message):
         if user_files:
             files_text = "📁 Ваши последние файлы:\n\n"
             
-            for file_id, file_name, file_size, download_count, upload_date, media_type, is_protected in user_files:
+            for file_id, file_name, file_size, download_count, upload_date, media_type, is_protected in user_files[:10]:  # Ограничиваем количество
                 size_str = format_size(file_size)
                 bot_username = bot.get_me().username
                 file_link = f"https://t.me/{bot_username}?start=file_{file_id}"
@@ -450,7 +490,7 @@ def handle_favorites(message):
         if favorites:
             fav_text = "⭐ Ваше избранное:\n\n"
             
-            for file_id, file_name, file_size, media_type in favorites:
+            for file_id, file_name, file_size, media_type in favorites[:10]:  # Ограничиваем количество
                 size_str = format_size(file_size)
                 bot_username = bot.get_me().username
                 file_link = f"https://t.me/{bot_username}?start=file_{file_id}"
@@ -475,7 +515,7 @@ def handle_notifications(message):
         if notifications:
             notif_text = "🔔 Последние уведомления:\n\n"
             
-            for notif_id, file_name, downloader_name, download_date, is_read in notifications:
+            for notif_id, file_name, downloader_name, download_date, is_read in notifications[:10]:  # Ограничиваем количество
                 time_ago = "недавно" if isinstance(download_date, (int, float)) else str(download_date)
                 status = "✅" if is_read else "🆕"
                 
@@ -555,12 +595,23 @@ def handle_text(message):
         bot.send_message(message.chat.id, "🤖 Отправьте мне файл чтобы получить ссылку!")
 
 if __name__ == "__main__":
-    # Запускаем Flask в отдельном потоке
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
+    # Инициализация базы данных
+    init_db()
+    logger.info("База данных инициализирована")
     
-    # Даем время Flask запуститься
-    time.sleep(2)
+    # Запускаем Flask (вебхук будет обрабатываться автоматически)
+    port = int(os.environ.get("PORT", 10000))
+    logger.info(f"Starting bot on port {port}")
     
-    # Запускаем бота
-    run_bot()
+    # Устанавливаем вебхук при запуске
+    try:
+        webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME', 'your-app-name.onrender.com')}/webhook"
+        bot.remove_webhook()
+        time.sleep(2)
+        bot.set_webhook(url=webhook_url)
+        logger.info(f"Webhook установлен: {webhook_url}")
+    except Exception as e:
+        logger.error(f"Error setting webhook: {e}")
+    
+    # Запускаем Flask app
+    app.run(host='0.0.0.0', port=port, debug=False)
